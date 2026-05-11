@@ -11,7 +11,7 @@ on:
         description: 'Quality (720p, 1080p, or bitrate like 192kbps)'
         required: false
         type: string
-        default: '1080p'
+        default: '720p'
 
 permissions:
   contents: write
