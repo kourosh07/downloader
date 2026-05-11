@@ -1,0 +1,74 @@
+name: "YouTube Downloader Bot"
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  download-for-issue:
+    if: contains(github.event.issue.labels.*.name, 'youtube-download')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse Issue Body
+        id: parse
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body;
+            const urlMatch = body.match(/### لینک ویدیو یا پلی‌لیست\n\n(.+?)\n/);
+            const qualityMatch = body.match(/### کیفیت دانلود\n\n(.+?)\n/);
+            if (!urlMatch || !qualityMatch) {
+              core.setFailed('Could not parse issue body.');
+              return;
+            }
+            const url = urlMatch[1].trim();
+            const qualityRaw = qualityMatch[1].trim();
+            let format = 'bestvideo+bestaudio/best';
+            if (qualityRaw.includes('فقط صدا')) format = 'bestaudio/best';
+            else if (qualityRaw.includes('1080p')) format = 'bestvideo[height<=1080]+bestaudio/best';
+            else if (qualityRaw.includes('720p')) format = 'bestvideo[height<=720]+bestaudio/best';
+            else if (qualityRaw.includes('480p')) format = 'bestvideo[height<=480]+bestaudio/best';
+            core.setOutput('url', url);
+            core.setOutput('format', format);
+            core.setOutput('quality', qualityRaw);
+
+      - name: Setup Tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+          python3 -m pip install yt-dlp
+
+      - name: Download from YouTube
+        run: |
+          mkdir -p downloads
+          cd downloads
+          yt-dlp -f "${{ steps.parse.outputs.format }}" --output "%(title)s.%(ext)s" "${{ steps.parse.outputs.url }}"
+
+      - name: Push Files
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@example.com"
+          git add downloads/
+          git commit -m "Download for ${{ github.event.issue.user.login }}" || echo "No files to commit"
+          git push
+
+      - name: Post Result as Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issueNumber = context.issue.number;
+            const userName = context.payload.issue.user.login;
+            const treeUrl = `https://github.com/${owner}/${repo}/tree/main/downloads`;
+            const message = `✅ @${userName} دانلود شما آماده است.\n\n📁 **[برای دیدن و دانلود فایل‌ها اینجا کلیک کنید](${treeUrl})**\n\nکیفیت درخواستی: ${{ steps.parse.outputs.quality }}`;
+            await github.rest.issues.createComment({
+              owner: owner,
+              repo: repo,
+              issue_number: issueNumber,
+              body: message
+            });

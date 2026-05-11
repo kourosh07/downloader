@@ -1,0 +1,23 @@
+name: "🎬 دانلود از یوتیوب"
+description: "لینک ویدیو یا پلی‌لیست یوتیوب را برای دانلود بفرستید."
+title: "[دانلود یوتیوب]: "
+labels: ["youtube-download"]
+body:
+  - type: input
+    id: url
+    attributes:
+      label: "لینک ویدیو یا پلی‌لیست"
+      placeholder: "https://www.youtube.com/watch?v=..."
+    validations:
+      required: true
+  - type: dropdown
+    id: quality
+    attributes:
+      label: "کیفیت دانلود"
+      options:
+        - "1080p (بهترین کیفیت)"
+        - "720p"
+        - "480p"
+        - "فقط صدا (MP3)"
+    validations:
+      required: true

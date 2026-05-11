@@ -1,0 +1,71 @@
+name: Setup Wizard
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  wizard:
+    if: github.event.commits[0].message == 'init from template'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create downloads folder
+        run: |
+          mkdir -p downloads
+          echo "Files will appear here after download." > downloads/README.txt
+
+      - name: Check and Request Permissions
+        id: perm_check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const workflowName = 'Setup Wizard';
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: owner,
+              repo: repo,
+              workflow_id: workflowName,
+              status: 'completed',
+              per_page: 5
+            });
+            const completedRuns = runs.data.workflow_runs.filter(run => run.conclusion === 'success');
+
+            if (completedRuns.length > 1) {
+              core.notice('Setup has already run successfully. Skipping.');
+              return;
+            }
+
+            const permIssueTitle = 'تنظیم یک مرحله‌ای برای فعال شدن ربات';
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: owner,
+              repo: repo,
+              state: 'open',
+              creator: 'github-actions[bot]',
+              title: permIssueTitle
+            });
+
+            if (existingIssues.data.length > 0) {
+              core.notice('Permissions issue already exists. Skipping.');
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: owner,
+              repo: repo,
+              title: permIssueTitle,
+              body: `@${context.actor} برای اینکه ربات دانلودر یوتیوب کار کند، **فقط یک بار** این کار را انجام بده:\n\n1. روی این لینک کلیک کن: [تنظیمات Actions](${context.payload.repository.html_url}/settings/actions)\n2. در بخش **Workflow permissions** گزینه **Read and write permissions** را انتخاب کن.\n3. دکمه **Save** را بزن.\n\nبعد از همین Issue برای دانلود ویدیوها استفاده کن.`
+            });
+
+      - name: Commit setup changes
+        run: |
+          git config user.name "setup-bot"
+          git config user.email "setup@example.com"
+          git add downloads/ README.md
+          git commit -m "Setup completed successfully" || echo "Nothing to commit"
+          git push

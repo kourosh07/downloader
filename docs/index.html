@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>دانلودر یوتیوب</title>
+    <style>
+      body {
+        font-family: Tahoma, sans-serif;
+        background: #0d1117;
+        color: #c9d1d9;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        margin: 0;
+      }
+      .container {
+        background: #161b22;
+        padding: 2rem;
+        border-radius: 8px;
+        border: 1px solid #30363d;
+        width: 90%;
+        max-width: 500px;
+      }
+      h1 {
+        color: #58a6ff;
+        margin-top: 0;
+      }
+      label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: bold;
+      }
+      input,
+      select,
+      button {
+        width: 100%;
+        padding: 0.75rem;
+        margin-bottom: 1rem;
+        border-radius: 6px;
+        border: 1px solid #30363d;
+        background: #0d1117;
+        color: #c9d1d9;
+        font-size: 1rem;
+        box-sizing: border-box;
+      }
+      button {
+        background: #238636;
+        border-color: #2ea043;
+        font-weight: bold;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #2ea043;
+      }
+      .hint {
+        font-size: 0.8rem;
+        color: #8b949e;
+        margin-top: 1rem;
+      }
+      .hint code {
+        background: #30363d;
+        padding: 0.2em 0.4em;
+        border-radius: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🎬 دانلود از یوتیوب</h1>
+      <div
+        class="hint"
+        style="
+          margin-bottom: 1rem;
+          background: #1a1f2b;
+          padding: 0.75rem;
+          border-radius: 6px;
+        "
+      >
+        ⚠️ قبل از اولین استفاده، یک بار وارد تنظیمات شوید: <br />
+        <code
+          >Settings → Actions → General → Workflow permissions → Read and write
+          permissions → Save</code
+        >
+      </div>
+      <label for="repoUrl">آدرس ریپازیتوری شما:</label>
+      <input
+        type="text"
+        id="repoUrl"
+        placeholder="https://github.com/YourUser/YourRepo"
+        dir="ltr"
+      />
+
+      <label for="videoUrl">لینک ویدیو:</label>
+      <input
+        type="text"
+        id="videoUrl"
+        placeholder="https://www.youtube.com/watch?v=..."
+        dir="ltr"
+      />
+
+      <label for="quality">کیفیت:</label>
+      <select id="quality">
+        <option value="1080p (بهترین کیفیت)">1080p (بهترین کیفیت)</option>
+        <option value="720p">720p</option>
+        <option value="480p">480p</option>
+        <option value="فقط صدا (MP3)">فقط صدا (MP3)</option>
+      </select>
+
+      <button onclick="createIssue()">شروع دانلود</button>
+      <div id="message" style="margin-top: 1rem; text-align: center"></div>
+      <div class="hint">
+        این صفحه یک Issue در ریپازیتوری شما ایجاد می‌کند. ربات به صورت خودکار آن
+        را پردازش کرده و لینک دانلود را در کامنت می‌گذارد.
+      </div>
+    </div>
+    <script>
+      async function createIssue() {
+        const repoUrl = document.getElementById("repoUrl").value.trim();
+        const videoUrl = document.getElementById("videoUrl").value.trim();
+        const quality = document.getElementById("quality").value;
+        const msgDiv = document.getElementById("message");
+
+        if (!repoUrl || !videoUrl) {
+          msgDiv.innerHTML =
+            '<span style="color: #f85149;">لطفاً هر دو لینک را پر کنید.</span>';
+          return;
+        }
+
+        const match = repoUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+        if (!match) {
+          msgDiv.innerHTML =
+            '<span style="color: #f85149;">آدرس ریپازیتوری معتبر نیست.</span>';
+          return;
+        }
+
+        const owner = match[1];
+        const repo = match[2];
+
+        const title = encodeURIComponent(
+          "[دانلود یوتیوب]: " + videoUrl.substring(0, 50),
+        );
+        const body = encodeURIComponent(
+          `### لینک ویدیو یا پلی‌لیست\n\n${videoUrl}\n\n### کیفیت دانلود\n\n${quality}`,
+        );
+        const labels = "youtube-download";
+
+        const issueUrl = `https://github.com/${owner}/${repo}/issues/new?title=${title}&body=${body}&labels=${labels}`;
+
+        msgDiv.innerHTML =
+          '<span style="color: #58a6ff;">در حال باز کردن صفحه Issue...</span>';
+        window.open(issueUrl, "_blank");
+        msgDiv.innerHTML =
+          '<span style="color: #3fb950;">✅ صفحه Issue باز شد. روی Submit new issue کلیک کنید. سپس به زودی ربات فایل را آماده می‌کند.</span>';
+      }
+    </script>
+  </body>
+</html>
