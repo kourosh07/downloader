@@ -4,46 +4,86 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'YouTube URL'
+        description: 'YouTube video URL'
         required: true
+        type: string
       quality:
-        description: 'Quality (e.g., 720p, 1080p, best)'
+        description: 'Max video height (number) or "best"'
         required: false
-        default: '720p'
+        default: '1080'
+        type: string
+
+concurrency:
+  group: youtube-downloader
+  cancel-in-progress: true
 
 jobs:
   download:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
       - name: Install yt-dlp
         run: |
           sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
 
+      - name: Clear yt-dlp cache
+        run: yt-dlp --rm-cache-dir
+
+      - name: Prepare downloads folder
+        run: mkdir -p downloads
+
       - name: Download video
         run: |
-          mkdir -p downloads
-          yt-dlp -f "bestvideo[height<=${{ github.event.inputs.quality }}]+bestaudio/best[height<=${{ github.event.inputs.quality }}]" \
-            -o "downloads/%(title)s.%(ext)s" \
-            "${{ github.event.inputs.url }}"
+          URL="${{ github.event.inputs.url }}"
+          QUALITY="${{ github.event.inputs.quality }}"
 
-      - name: Split large files (if >95MB)
+          if [[ "$QUALITY" == "best" ]]; then
+            FORMAT="bestvideo+bestaudio/best"
+          else
+            FORMAT="bestvideo[height<=${QUALITY}]+bestaudio/best[height<=${QUALITY}]/best"
+          fi
+
+          yt-dlp \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            --merge-output-format mp4 \
+            -o "downloads/%(title)s.%(ext)s" \
+            -f "$FORMAT" \
+            --no-playlist \
+            "$URL"
+
+      - name: Split large files (if necessary)
         run: |
           cd downloads
-          for file in *; do
-            if [ -f "$file" ] && [ $(stat -c%s "$file") -gt 95000000 ]; then
-              split -b 95M "$file" "${file}." 
-              rm "$file"
+          for f in *.mp4; do
+            [ -f "$f" ] || continue
+            SIZE=$(stat -c%s "$f")
+            if [ "$SIZE" -gt 99614720 ]; then
+              echo "Splitting $f ($SIZE bytes)"
+              split -b 90M -d "$f" "${f}.part"
+              rm -f "$f"
             fi
           done
 
-      - name: Commit and push files
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add downloads/
-          git commit -m "Add downloaded video" || echo "No changes to commit"
-          git push
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Downloaded video from ${{ github.event.inputs.url }}"
+            git push
+          fi
