@@ -1,0 +1,49 @@
+name: YouTube Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube URL'
+        required: true
+      quality:
+        description: 'Quality (e.g., 720p, 1080p, best)'
+        required: false
+        default: '720p'
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install yt-dlp
+        run: |
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+
+      - name: Download video
+        run: |
+          mkdir -p downloads
+          yt-dlp -f "bestvideo[height<=${{ github.event.inputs.quality }}]+bestaudio/best[height<=${{ github.event.inputs.quality }}]" \
+            -o "downloads/%(title)s.%(ext)s" \
+            "${{ github.event.inputs.url }}"
+
+      - name: Split large files (if >95MB)
+        run: |
+          cd downloads
+          for file in *; do
+            if [ -f "$file" ] && [ $(stat -c%s "$file") -gt 95000000 ]; then
+              split -b 95M "$file" "${file}." 
+              rm "$file"
+            fi
+          done
+
+      - name: Commit and push files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add downloads/
+          git commit -m "Add downloaded video" || echo "No changes to commit"
+          git push
