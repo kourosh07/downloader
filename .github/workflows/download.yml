@@ -8,82 +8,138 @@ on:
         required: true
         type: string
       quality:
-        description: 'Max video height (number) or "best"'
+        description: 'Quality (720p, 1080p, or bitrate like 192kbps)'
         required: false
-        default: '1080'
         type: string
+        default: '1080p'
 
-concurrency:
-  group: youtube-downloader
-  cancel-in-progress: true
+permissions:
+  contents: write
 
 jobs:
-  download:
+  youtube-download:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout repository
+      - name: 📂 Checkout Repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install ffmpeg
+      - name: 🔧 Install Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get update -qq
+          sudo apt-get install -y zip curl python3 python3-pip
+          pip3 install --quiet requests
 
-      - name: Install yt-dlp
+      - name: 🔗 Get Download Link
+        id: retrieve
         run: |
-          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod a+rx /usr/local/bin/yt-dlp
+          python3 << 'EOF'
+          import os, sys, time, re, requests
 
-      - name: Clear yt-dlp cache
-        run: yt-dlp --rm-cache-dir
+          URL  = os.environ.get('INPUT_URL')
+          QUAL = os.environ.get('INPUT_QUALITY')
 
-      - name: Prepare downloads folder
-        run: mkdir -p downloads
+          # Map website quality to something the API understands
+          # If user sent "best", pick the highest available (1080p)
+          if QUAL.lower() == 'best':
+              QUAL = '1080p'
 
-      - name: Download video
+          # The API expects "quality" for video, or "bitrate" for audio.
+          # We'll always download video, so use the quality value.
+          payload = {
+              "url": URL,
+              "os": "linux",
+              "output": {
+                  "type": "video",
+                  "format": "mp4",
+                  "quality": QUAL
+              }
+          }
+
+          s = requests.Session()
+          s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+          s.get("https://media.ytmp3.gg/")
+
+          resp = s.post("https://hub.ytconvert.org/api/download", json=payload, timeout=30)
+          resp.raise_for_status()
+          data = resp.json()
+
+          status_url = data.get('statusUrl')
+          title = data.get('title', 'video')
+
+          dl_url = None
+          for _ in range(150):
+              time.sleep(2)
+              r = s.get(status_url, timeout=20)
+              status = r.json()
+              if status.get('status') == 'completed':
+                  dl_url = status.get('downloadUrl')
+                  break
+              if status.get('status') == 'failed':
+                  print("::error::Server failed to prepare the video")
+                  sys.exit(1)
+
+          if not dl_url:
+              print("::error::Could not get download link")
+              sys.exit(1)
+
+          vid   = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', URL)[1]
+          clean = re.sub(r'[^a-zA-Z0-9\-_()\[\]]', '_', title.replace(' ', '_'))
+          clean = re.sub(r'_+', '_', clean).strip('_')[:70] or vid
+          clean = clean.lstrip('-')
+          fname = f"{clean}_{vid}_{QUAL}.mp4"
+
+          with open(".download_info", "w", encoding="utf-8") as f:
+              f.write(f"{dl_url}\n{fname}\n{title}")
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"filename={fname}\n")
+              f.write(f"title={title}\n")
+          EOF
+        env:
+          INPUT_URL:     ${{ github.event.inputs.url }}
+          INPUT_QUALITY: ${{ github.event.inputs.quality }}
+
+      - name: 📥 Download File
         run: |
-          URL="${{ github.event.inputs.url }}"
-          QUALITY="${{ github.event.inputs.quality }}"
-
-          if [[ "$QUALITY" == "best" ]]; then
-            FORMAT="bestvideo+bestaudio/best"
-          else
-            FORMAT="bestvideo[height<=${QUALITY}]+bestaudio/best[height<=${QUALITY}]/best"
+          DL_URL=$(head -1 .download_info)
+          FILENAME=$(sed -n '2p' .download_info)
+          mkdir -p release_files
+          echo "Downloading: $FILENAME"
+          curl -L --fail --progress-bar -o "release_files/$FILENAME" "$DL_URL"
+          if [ ! -s "release_files/$FILENAME" ]; then
+            echo "::error::Downloaded file is empty!"
+            exit 1
           fi
 
-          yt-dlp \
-            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-            --merge-output-format mp4 \
-            -o "downloads/%(title)s.%(ext)s" \
-            -f "$FORMAT" \
-            --no-playlist \
-            "$URL"
-
-      - name: Split large files (if necessary)
+      - name: ✂️ Split Large File (if needed)
         run: |
-          cd downloads
-          for f in *.mp4; do
-            [ -f "$f" ] || continue
-            SIZE=$(stat -c%s "$f")
-            if [ "$SIZE" -gt 99614720 ]; then
-              echo "Splitting $f ($SIZE bytes)"
-              split -b 90M -d "$f" "${f}.part"
-              rm -f "$f"
-            fi
-          done
+          FILENAME="${{ steps.retrieve.outputs.filename }}"
+          # Default split size: 90 MB
+          THRESH_MB=90
+          FILESIZE=$(stat -c%s "release_files/$FILENAME" 2>/dev/null || echo 0)
+          THRESH_BYTES=$((THRESH_MB * 1024 * 1024))
 
-      - name: Commit and push
+          if [ "$FILESIZE" -gt "$THRESH_BYTES" ]; then
+            echo "🔪 Splitting into ${THRESH_MB}MB parts..."
+            BASE="${FILENAME%.*}"
+            cd release_files
+            zip -r -s "${THRESH_MB}m" "${BASE}.zip" "./$FILENAME"
+            rm -- "$FILENAME"
+            cd ..
+          else
+            echo "📦 No split needed ($(( FILESIZE / 1024 / 1024 )) MB)"
+          fi
+
+      - name: 📤 Push to Repository
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
+          mkdir -p downloads
+          mv release_files/* downloads/
           git add downloads/
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Downloaded video from ${{ github.event.inputs.url }}"
-            git push
-          fi
+          git commit -m "⬇️ YouTube: ${{ steps.retrieve.outputs.filename }}" || echo "Nothing to commit"
+          git push
