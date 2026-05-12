@@ -1,4 +1,4 @@
-name: "دانلودر لینک مستقیم"
+name: "Direct Link Downloader"
 
 on:
   workflow_dispatch:
