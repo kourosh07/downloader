@@ -1,0 +1,207 @@
+name: "دانلودر لینک مستقیم"
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: "Direct File URL"
+        required: true
+        type: string
+
+      zip_password:
+        description: "Password for archive (leave empty for no password)"
+        required: false
+        default: ""
+        type: string
+
+      max_part_mb:
+        description: "Maximum size per part (MB)"
+        required: false
+        default: "90"
+        type: string
+
+      upload_method:
+        description: "Upload Method"
+        required: true
+        default: "repository"
+        type: choice
+        options:
+          - repository
+          - release
+
+      release_tag:
+        description: "Release Tag"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  direct-download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y p7zip-full curl wget
+
+      - name: Download File
+        id: download
+        run: |
+          mkdir -p temp_dl
+          
+          FILE_URL="${{ github.event.inputs.file_url }}"
+          
+          FILENAME=$(basename "$FILE_URL" | sed 's/[?#].*//' | sed 's/%20/ /g')
+          FILENAME=$(echo "$FILENAME" | sed 's/[^a-zA-Z0-9._() -]/_/g' | sed 's/__*/_/g')
+          
+          if [ -z "$FILENAME" ]; then
+            FILENAME="download_$(date +%Y%m%d_%H%M%S)"
+          fi
+          
+          echo "Downloading: $FILENAME from $FILE_URL"
+          
+          curl -L --fail --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 600 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -o "temp_dl/$FILENAME" \
+            "$FILE_URL" || {
+            echo "Curl failed, trying wget..."
+            wget --timeout=600 --tries=5 --user-agent="Mozilla/5.0" \
+              -O "temp_dl/$FILENAME" "$FILE_URL"
+          }
+          
+          if [ ! -f "temp_dl/$FILENAME" ] || [ ! -s "temp_dl/$FILENAME" ]; then
+            echo "Download failed!"
+            exit 1
+          fi
+          
+          FILE_SIZE=$(stat -c%s "temp_dl/$FILENAME" 2>/dev/null || echo 0)
+          FILE_SIZE_MB=$((FILE_SIZE / 1048576))
+          
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+          echo "filepath=temp_dl/$FILENAME" >> "$GITHUB_OUTPUT"
+          echo "filesize=$FILE_SIZE" >> "$GITHUB_OUTPUT"
+          echo "filesize_mb=$FILE_SIZE_MB" >> "$GITHUB_OUTPUT"
+
+      - name: Create Archive
+        id: archive
+        run: |
+          FILEPATH="${{ steps.download.outputs.filepath }}"
+          PASS="${{ github.event.inputs.zip_password }}"
+          THRESH_MB="${{ github.event.inputs.max_part_mb }}"
+          
+          if [[ -z "$THRESH_MB" ]] || [[ "$THRESH_MB" -le 0 ]]; then
+            THRESH_MB=1800
+          fi
+          
+          if [[ "$THRESH_MB" -gt 1900 ]]; then
+            THRESH_MB=1800
+          fi
+          
+          BASENAME=$(basename "$FILEPATH")
+          
+          cd temp_dl || exit 1
+          
+          DATESTAMP=$(date +%Y%m%d_%H%M%S)
+          ARCHIVE_BASE="${BASENAME%.*}_${DATESTAMP}"
+          
+          if [ -n "$PASS" ]; then
+            7z a -p"$PASS" -mhe=on -mx=3 -v${THRESH_MB}m "${ARCHIVE_BASE}.7z" "$BASENAME"
+            echo "password_protected=true" >> "$GITHUB_OUTPUT"
+          else
+            7z a -mx=3 -v${THRESH_MB}m "${ARCHIVE_BASE}.7z" "$BASENAME"
+            echo "password_protected=false" >> "$GITHUB_OUTPUT"
+          fi
+          
+          if [ -f "${ARCHIVE_BASE}.7z.001" ] && [ ! -f "${ARCHIVE_BASE}.7z.002" ]; then
+            mv "${ARCHIVE_BASE}.7z.001" "${ARCHIVE_BASE}.7z"
+          fi
+          
+          ARCHIVE_FILES=$(ls ${ARCHIVE_BASE}.7z* 2>/dev/null | wc -l)
+          
+          echo "archive_name=${ARCHIVE_BASE}" >> "$GITHUB_OUTPUT"
+          echo "archive_files=$ARCHIVE_FILES" >> "$GITHUB_OUTPUT"
+          
+          rm -f "$BASENAME"
+          
+          cd ..
+
+      - name: Get Current Date
+        id: get_date
+        run: |
+          echo "date=$(date '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_OUTPUT"
+          echo "date_short=$(date '+%Y%m%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Push to Repository
+        if: github.event.inputs.upload_method == 'repository'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          mkdir -p downloads
+          
+          mv temp_dl/* downloads/ 2>/dev/null || true
+          
+          git pull origin main --rebase || git pull origin master --rebase || true
+          
+          git add downloads/
+          
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "📥 Direct Download: ${{ steps.download.outputs.filename }} (${{ steps.download.outputs.filesize_mb }}MB) [skip ci]"
+            git push origin HEAD:main || git push origin HEAD:master
+          fi
+
+      - name: Upload to GitHub Releases
+        if: github.event.inputs.upload_method == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag != '' && github.event.inputs.release_tag || format('direct-dl-{0}', github.run_number) }}
+          name: "Direct Download - ${{ steps.download.outputs.filename }}"
+          body: |
+            ## 📥 Direct Download Release
+            
+            | Detail | Value |
+            |--------|-------|
+            | **File** | ${{ steps.download.outputs.filename }} |
+            | **Size** | ${{ steps.download.outputs.filesize_mb }} MB |
+            | **Date** | ${{ steps.get_date.outputs.date }} |
+            | **Password** | ${{ steps.archive.outputs.password_protected == 'true' && 'Yes' || 'No' }} |
+            | **Parts** | ${{ steps.archive.outputs.archive_files }} |
+            
+            > Downloaded via Direct Download Workflow
+          files: temp_dl/*
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf temp_dl
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 📊 Download Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| File | ${{ steps.download.outputs.filename }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Size | ${{ steps.download.outputs.filesize_mb }} MB |" >> $GITHUB_STEP_SUMMARY
+          echo "| Archive Parts | ${{ steps.archive.outputs.archive_files }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Upload Method | ${{ github.event.inputs.upload_method }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
